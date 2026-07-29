@@ -1,7 +1,5 @@
 #include "displayx_layer.hpp"
 
-static int prefer_rgba8 = -1;
-
 VK_LAYER_EXPORT VkResult VKAPI_CALL
 DisplayX_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 						   const VkAllocationCallbacks *pAllocator,
@@ -55,10 +53,6 @@ DisplayX_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
     table.GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)gip(*pInstance, "vkGetInstanceProcAddr");
     table.DestroyInstance = (PFN_vkDestroyInstance)gip(*pInstance, "vkDestroyInstance");
     table.GetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)gip(*pInstance, "vkGetPhysicalDeviceMemoryProperties");
-
-    if (prefer_rgba8 == -1) {
-    	prefer_rgba8 = getenv("PREFER_RGBA8") && atoi(getenv("PREFER_RGBA8"));
-    }
 
 	{
 		scoped_lock l(global_lock);
@@ -434,23 +428,16 @@ DisplayX_GetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physicalDevice,
 	Logger::log("trace", "Calling vkGetPhysicalDeviceSurfaceFormatsKHR");
 	
 	if (pSurfaceFormats == nullptr) {
-		*pSurfaceFormatCount = (prefer_rgba8) ? 2 : 4;
+		*pSurfaceFormatCount = 2;
 		return VK_SUCCESS;
 	}
 
-	*pSurfaceFormatCount = prefer_rgba8 ? 2 : 4;
+	*pSurfaceFormatCount = 2;
 
 	pSurfaceFormats[0].format = VK_FORMAT_R8G8B8A8_UNORM;
 	pSurfaceFormats[0].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	pSurfaceFormats[1].format = VK_FORMAT_R8G8B8A8_SRGB;
 	pSurfaceFormats[1].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-	
-	if (!prefer_rgba8) {
-		pSurfaceFormats[2].format = VK_FORMAT_B8G8R8A8_UNORM;
-		pSurfaceFormats[2].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-		pSurfaceFormats[3].format = VK_FORMAT_B8G8R8A8_SRGB;
-		pSurfaceFormats[3].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-	}
 	
 	return VK_SUCCESS;
 }
@@ -464,23 +451,16 @@ DisplayX_GetPhysicalDeviceSurfaceFormats2KHR(VkPhysicalDevice physicalDevice,
 	Logger::log("trace", "Calling vkGetPhysicalDeviceSurfaceFormats2KHR");
 	
 	if (pSurfaceFormats == nullptr) {
-		*pSurfaceFormatCount = (prefer_rgba8) ? 2 : 4;
+		*pSurfaceFormatCount = 2;
 		return VK_SUCCESS;
 	}
 
-	*pSurfaceFormatCount = (prefer_rgba8) ? 2 : 4;
+	*pSurfaceFormatCount = 2;
 
 	pSurfaceFormats[0].surfaceFormat.format = VK_FORMAT_R8G8B8A8_UNORM;
 	pSurfaceFormats[0].surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	pSurfaceFormats[1].surfaceFormat.format = VK_FORMAT_R8G8B8A8_SRGB;
 	pSurfaceFormats[1].surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-
-	if (!prefer_rgba8) {
-		pSurfaceFormats[2].surfaceFormat.format = VK_FORMAT_B8G8R8A8_UNORM;
-		pSurfaceFormats[2].surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-		pSurfaceFormats[3].surfaceFormat.format = VK_FORMAT_B8G8R8A8_SRGB;
-		pSurfaceFormats[3].surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-	}
 	
 	return VK_SUCCESS;
 }
@@ -530,9 +510,6 @@ int to_ahardwarebuffer_format(VkFormat format) {
 		case VK_FORMAT_R8G8B8A8_SRGB:
 		case VK_FORMAT_R8G8B8A8_UNORM:
 			return AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
-		case VK_FORMAT_B8G8R8A8_SRGB:
-		case VK_FORMAT_B8G8R8A8_UNORM:
-			return AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM;
 		default:
 			return AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
 	}
