@@ -3,7 +3,7 @@ CXXFLAGS := -std=c++17 -fPIC -lX11-xcb -lxcb -landroid -target aarch64-linux-and
 LDFLAGS := -shared
 PREFIX := /usr
 JSON := displayx_layer.json
-JSON_INSTALL := $(PREFIX)/share/vulkan/implicit_layer.d
+JSON_INSTALL := $(PREFIX)/share/vulkan/explicit_layer.d
 INSTALL := $(PREFIX)/lib/x86_64-linux-gnu
 
 SOURCES := src/displayx_layer.cpp \

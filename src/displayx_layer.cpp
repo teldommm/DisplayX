@@ -892,12 +892,84 @@ DisplayX_DestroyDevice(VkDevice device,
 	deviceDispatch.erase(GetKey(device));
 }
 
+VK_LAYER_EXPORT VkResult VKAPI_CALL
+DisplayX_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
+                                          VkLayerProperties *pProperties)
+{
+	Logger::log("trace", "Calling vkEnumerateInstanceLayerProperties");
+	
+	if (pPropertyCount) *pPropertyCount = 1;
+
+	if (pProperties) {
+		strcpy(pProperties->layerName, "VK_LAYER_DISPLAYX_display_x");
+		strcpy(pProperties->description, "DisplayX, an implementation of Xlib/Xcb wsi for Android");
+		pProperties->implementationVersion = 1;
+		pProperties->specVersion = VK_API_VERSION_1_0;
+	}
+
+	return VK_SUCCESS;
+}
+
+VK_LAYER_EXPORT VkResult VKAPI_CALL 
+DisplayX_EnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice, 
+										uint32_t *pPropertyCount, 
+										VkLayerProperties *pProperties)
+{
+	Logger::log("trace", "Calling vkEnumerateDeviceLayerProperties");
+	
+	return DisplayX_EnumerateInstanceLayerProperties(pPropertyCount, pProperties);
+}
+
+VK_LAYER_EXPORT VkResult VKAPI_CALL
+DisplayX_EnumerateInstanceExtensionProperties(const char *pLayerName, 
+											  uint32_t *pPropertyCount, 
+											  VkExtensionProperties *pProperties)
+{
+	Logger::log("trace", "Calling vkEnumerateInstanceExtensionProperties");
+	
+	if (pLayerName == nullptr || strcmp(pLayerName, "VK_LAYER_DISPLAYX_display_x"))
+		return VK_ERROR_LAYER_NOT_PRESENT;
+
+	if (pPropertyCount) *pPropertyCount = 2;
+
+	if (pProperties) {
+		strcpy(pProperties[0].extensionName, "VK_KHR_xcb_surface");
+		pProperties[0].specVersion = 6;
+		strcpy(pProperties[1].extensionName, "VK_KHR_xlib_surface");
+		pProperties[1].specVersion = 6;
+	}
+
+	return VK_SUCCESS;
+}
+
+VK_LAYER_EXPORT VkResult VKAPI_CALL
+DisplayX_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
+											const char *pLayerName,
+                                            uint32_t *pPropertyCount,
+                                            VkExtensionProperties *pProperties)
+{
+	Logger::log("trace", "Calling vkEnumerateDeviceExtensionProperties");
+	
+	if (pLayerName == nullptr || strcmp(pLayerName, "VK_LAYER_DISPLAYX_display_x")) {
+		if (physicalDevice == VK_NULL_HANDLE)
+			return VK_SUCCESS;
+			
+    	scoped_lock l(global_lock);
+        return instanceDispatch[GetKey(physicalDevice)].EnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
+   	}
+
+    if (pPropertyCount) *pPropertyCount = 0;
+    return VK_SUCCESS;
+}
+
 VK_LAYER_EXPORT PFN_vkVoidFunction VKAPI_CALL
 DisplayX_GetDeviceProcAddr(VkDevice device, 
-						      const char *pName)
+						   const char *pName)
 {	
 	GETPROCADDR(DestroyDevice);
 	GETPROCADDR(CreateDevice);
+	GETPROCADDR(EnumerateDeviceLayerProperties);
+	GETPROCADDR(EnumerateDeviceExtensionProperties);
 	GETPROCADDR(CreateSwapchainKHR);
 	GETPROCADDR(DestroySwapchainKHR);
 	GETPROCADDR(GetSwapchainImagesKHR);
@@ -920,6 +992,8 @@ DisplayX_GetInstanceProcAddr(VkInstance instance,
 {   
 	GETPROCADDR(CreateInstance);
 	GETPROCADDR(DestroyInstance);
+	GETPROCADDR(EnumerateInstanceLayerProperties);
+	GETPROCADDR(EnumerateInstanceExtensionProperties);
 	GETPROCADDR(CreateDevice);
 	GETPROCADDR(CreateXcbSurfaceKHR);
 	GETPROCADDR(CreateXlibSurfaceKHR);
