@@ -966,6 +966,7 @@ VK_LAYER_EXPORT PFN_vkVoidFunction VKAPI_CALL
 DisplayX_GetDeviceProcAddr(VkDevice device, 
 						   const char *pName)
 {	
+	GETPROCADDR(GetDeviceProcAddr);
 	GETPROCADDR(DestroyDevice);
 	GETPROCADDR(CreateDevice);
 	GETPROCADDR(EnumerateDeviceLayerProperties);
@@ -990,6 +991,7 @@ VK_LAYER_EXPORT PFN_vkVoidFunction VKAPI_CALL
 DisplayX_GetInstanceProcAddr(VkInstance instance, 
 							 const char *pName)
 {   
+	GETPROCADDR(GetInstanceProcAddr);
 	GETPROCADDR(CreateInstance);
 	GETPROCADDR(DestroyInstance);
 	GETPROCADDR(EnumerateInstanceLayerProperties);
