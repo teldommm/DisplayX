@@ -72,7 +72,7 @@ struct device {
 
 struct fake_surface {
 	VkInstance instance;
-	int native_renderer_fd;
+	int displayx_server_fd;
 	xcb_connection_t *conn;
 	xcb_window_t window;
 };

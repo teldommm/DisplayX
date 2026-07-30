@@ -287,20 +287,20 @@ DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
 	struct fake_surface *fake_surf = (struct fake_surface *)malloc(sizeof(struct fake_surface));
 	fake_surf->conn = pCreateInfo->connection;
 	fake_surf->window = pCreateInfo->window;
-	fake_surf->native_renderer_fd = socket(AF_UNIX, SOCK_STREAM, 0);                  
+	fake_surf->displayx_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);                  
 	fake_surf->instance = instance;
 
 	struct sockaddr_un addr{};
 	addr.sun_family = AF_UNIX;
-	const char *sock_name = "native_renderer";
+	const char *sock_name = "displayx";
 	size_t name_len = strlen(sock_name);
 	memcpy(addr.sun_path + 1, sock_name, name_len);
 	addr.sun_path[0] = '\0';
 	socklen_t len = offsetof(struct sockaddr_un, sun_path) + 1 + name_len;
-	res = connect(fake_surf->native_renderer_fd, (struct sockaddr *)&addr, len);
+	res = connect(fake_surf->displayx_server_fd, (struct sockaddr *)&addr, len);
 
 	if (res != 0) {
-		Logger::log("error", "Failed to connect to native renderer, res %d", res);
+		Logger::log("error", "Failed to connect to DisplayX server, res %d", res);
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
@@ -324,19 +324,19 @@ DisplayX_CreateXlibSurfaceKHR(VkInstance instance,
 	struct fake_surface *fake_surf = (struct fake_surface *)malloc(sizeof(struct fake_surface));
 	fake_surf->conn = XGetXCBConnection(pCreateInfo->dpy);
 	fake_surf->window = pCreateInfo->window;
-	fake_surf->native_renderer_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	fake_surf->displayx_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	fake_surf->instance = instance;
 	
 	struct sockaddr_un addr{};
 	addr.sun_family = AF_UNIX;
-	const char *sock_name = "native_renderer";
+	const char *sock_name = "displayx";
 	size_t name_len = strlen(sock_name);
 	memcpy(addr.sun_path + 1, sock_name, name_len);
 	socklen_t len = offsetof(struct sockaddr_un, sun_path) + 1 + name_len;
-	res = connect(fake_surf->native_renderer_fd, (struct sockaddr *)&addr, len);
+	res = connect(fake_surf->displayx_server_fd, (struct sockaddr *)&addr, len);
 
 	if (res != 0) {                                                                                    
-		Logger::log("error", "Failed to connect to native renderer, res %d", res);                     
+		Logger::log("error", "Failed to connect to DisplayX, res %d", res);                     
 		return VK_ERROR_INITIALIZATION_FAILED;                                                     
 	}
 
@@ -500,7 +500,7 @@ DisplayX_DestroySurfaceKHR(VkInstance instance,
 
 	Logger::log("info", "Destroying surface %p", fake_surface);
 
-	close(fake_surface->native_renderer_fd);
+	close(fake_surface->displayx_server_fd);
 	
 	free(fake_surface);
 }
@@ -555,10 +555,10 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 	swapchain->images.resize(swapchain->imageCount);
 	
 	int request_code = 1;
-	write(fake_surface->native_renderer_fd, &request_code, 4);
-	write(fake_surface->native_renderer_fd, &swapchain->id, 1);
-	write(fake_surface->native_renderer_fd, &swapchain->imageCount, 4);
-	write(fake_surface->native_renderer_fd, &swapchain->surface->window, 4);
+	write(fake_surface->displayx_server_fd, &request_code, 4);
+	write(fake_surface->displayx_server_fd, &swapchain->id, 1);
+	write(fake_surface->displayx_server_fd, &swapchain->imageCount, 4);
+	write(fake_surface->displayx_server_fd, &swapchain->surface->window, 4);
 	
 	for (uint32_t index = 0; index < swapchain->imageCount; index++) {
 		VkResult result;
@@ -647,7 +647,7 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 		if (result != VK_SUCCESS)
 			return result;
 
-		ret = AHardwareBuffer_sendHandleToUnixSocket(fake_image->ahb, swapchain->surface->native_renderer_fd);
+		ret = AHardwareBuffer_sendHandleToUnixSocket(fake_image->ahb, swapchain->surface->displayx_server_fd);
 		if (ret != 0)
 			return VK_ERROR_INITIALIZATION_FAILED;
 	
@@ -773,8 +773,8 @@ DisplayX_DestroySwapchainKHR(VkDevice device,
 	fake_swapchain->images.clear();
 
 	int request_code = 3;
-	write(fake_swapchain->surface->native_renderer_fd, &request_code, 4);
-	write(fake_swapchain->surface->native_renderer_fd, &fake_swapchain->id, 1);
+	write(fake_swapchain->surface->displayx_server_fd, &request_code, 4);
+	write(fake_swapchain->surface->displayx_server_fd, &fake_swapchain->id, 1);
 
 	id.destroy(fake_swapchain->id);
 
@@ -834,10 +834,10 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 		int index = pPresentInfo->pImageIndices[i];
 		int fence = q->fence->sync_fd;
 		
-		write(fake_swapchain->surface->native_renderer_fd, &request_code, 4);
-		write(fake_swapchain->surface->native_renderer_fd, &fake_swapchain->id, 1);
-		write(fake_swapchain->surface->native_renderer_fd, &index, 4);
-		sendFD(fake_swapchain->surface->native_renderer_fd, fence);
+		write(fake_swapchain->surface->displayx_server_fd, &request_code, 4);
+		write(fake_swapchain->surface->displayx_server_fd, &fake_swapchain->id, 1);
+		write(fake_swapchain->surface->displayx_server_fd, &index, 4);
+		sendFD(fake_swapchain->surface->displayx_server_fd, fence);
 	}
 
 	close(q->fence->sync_fd);
