@@ -732,7 +732,7 @@ DisplayX_AcquireNextImage2KHR(VkDevice device,
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		submitInfo.signalSemaphoreCount = (pAcquireInfo->semaphore != VK_NULL_HANDLE) ? 1 : 0;
 		submitInfo.pSignalSemaphores = (pAcquireInfo->semaphore != VK_NULL_HANDLE) ? &pAcquireInfo->semaphore : VK_NULL_HANDLE;
-		dev->table.QueueSubmit(queues.begin()->second->handle, 1, &submitInfo, pAcquireInfo->fence);
+		dev->table.QueueSubmit(q->handle, 1, &submitInfo, pAcquireInfo->fence);
 	}
 
 	{
