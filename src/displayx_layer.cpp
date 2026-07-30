@@ -558,6 +558,7 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 	write(fake_surface->native_renderer_fd, &request_code, 4);
 	write(fake_surface->native_renderer_fd, &swapchain->id, 1);
 	write(fake_surface->native_renderer_fd, &swapchain->imageCount, 4);
+	write(fake_surface->native_renderer_fd, &swapchain->surface->window, 4);
 	
 	for (uint32_t index = 0; index < swapchain->imageCount; index++) {
 		VkResult result;
