@@ -179,6 +179,7 @@ typedef struct VkLayerDispatchTable_ {
     PFN_vkCmdDebugMarkerEndEXT CmdDebugMarkerEndEXT;
     PFN_vkCmdDebugMarkerInsertEXT CmdDebugMarkerInsertEXT;
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAndroidHardwareBufferPropertiesANDROID;
+    PFN_vkWaitForPresentKHR WaitForPresentKHR;
 } VkLayerDispatchTable;
 
 typedef struct VkLayerInstanceDispatchTable_ {

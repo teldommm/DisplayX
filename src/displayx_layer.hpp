@@ -12,6 +12,7 @@
 #include <X11/Xlib-xcb.h>
 #include <X11/Xlib.h>
 #include <xcb/xcb.h>
+#include <sys/epoll.h>
 #include <libsync.h>
 #include <vulkan/vulkan_xcb.h>
 #include <vulkan/vulkan_xlib.h>
@@ -73,6 +74,7 @@ struct device {
 struct fake_surface {
 	VkInstance instance;
 	int displayx_server_fd;
+	int epoll_fd;
 	xcb_connection_t *conn;
 	xcb_window_t window;
 };
@@ -95,4 +97,5 @@ struct fake_swapchain {
 	std::vector<std::shared_ptr<struct fake_swapchain_image>> images;
 	uint32_t currentImage;
 	uint8_t id;
+	uint64_t presentId;
 };

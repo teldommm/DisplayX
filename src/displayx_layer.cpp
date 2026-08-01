@@ -169,6 +169,7 @@ DisplayX_CreateDevice(VkPhysicalDevice physicalDevice,
     table.ResetFences = (PFN_vkResetFences)gdpa(*pDevice, "vkResetFences");
     table.DestroyFence = (PFN_vkDestroyFence)gdpa(*pDevice, "vkDestroyFence");
     table.GetFenceFdKHR = (PFN_vkGetFenceFdKHR)gdpa(*pDevice, "vkGetFenceFdKHR");
+    table.WaitForPresentKHR = (PFN_vkWaitForPresentKHR)gdpa(*pDevice, "vkWaitForPresentKHR");
     table.QueueSubmit = (PFN_vkQueueSubmit)gdpa(*pDevice, "vkQueueSubmit");
     table.GetDeviceQueue = (PFN_vkGetDeviceQueue)gdpa(*pDevice, "vkGetDeviceQueue");
     table.GetDeviceQueue2 = (PFN_vkGetDeviceQueue2)gdpa(*pDevice, "vkGetDeviceQueue2");
@@ -304,6 +305,13 @@ DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
+	fake_surf->epoll_fd = epoll_create1(0);
+	struct epoll_event event{};
+	event.data.fd = fake_surf->displayx_server_fd;
+	event.events = EPOLLIN;
+	
+	epoll_ctl(fake_surf->epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
+
 	*pSurface = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR, fake_surf);
 
 	Logger::log("info", "Created surface %p", pSurface);
@@ -339,6 +347,13 @@ DisplayX_CreateXlibSurfaceKHR(VkInstance instance,
 		Logger::log("error", "Failed to connect to DisplayX, res %d", res);                     
 		return VK_ERROR_INITIALIZATION_FAILED;                                                     
 	}
+
+	fake_surf->epoll_fd = epoll_create1(0);
+	struct epoll_event event{};
+	event.data.fd = fake_surf->displayx_server_fd;
+	event.events = EPOLLIN;
+	            
+	epoll_ctl(fake_surf->epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
 
 	*pSurface = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR, fake_surf);
 
@@ -551,6 +566,7 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 	swapchain->surface = fake_surface;
 	swapchain->currentImage = 0;
 	swapchain->id = id.generate();
+	swapchain->presentId = 0;
 
 	swapchain->images.resize(swapchain->imageCount);
 	
@@ -806,11 +822,28 @@ void sendFD(int& socket, int fd) {
 
 VK_LAYER_EXPORT VkResult VKAPI_CALL
 DisplayX_QueuePresentKHR(VkQueue queue,
-							const VkPresentInfoKHR *pPresentInfo)
+						 const VkPresentInfoKHR *pPresentInfo)
 {
 	Logger::log("trace", "Calling vkQueuePresentKHR");
-	
+	const VkPresentIdKHR *presentId = nullptr;
+
 	auto q = queues[queue];
+
+	const VkBaseInStructure *current = reinterpret_cast<const VkBaseInStructure *>(pPresentInfo->pNext);
+	while(current) {
+		switch (current->sType) {
+			case VK_STRUCTURE_TYPE_PRESENT_ID_KHR:
+			{
+				presentId = reinterpret_cast<const VkPresentIdKHR *>(current);
+				break;
+			}	
+			default: 
+			{
+				break;
+			}
+		}
+		current = current->pNext;
+	}
 
 	VkFenceGetFdInfoKHR getFence{};
 	getFence.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
@@ -833,11 +866,16 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 		int request_code = 2;
 		int index = pPresentInfo->pImageIndices[i];
 		int fence = q->fence->sync_fd;
+		uint64_t present_id = -1;
+		if (presentId) {
+			present_id = presentId->pPresentIds[i];
+		}
 		
 		write(fake_swapchain->surface->displayx_server_fd, &request_code, 4);
 		write(fake_swapchain->surface->displayx_server_fd, &fake_swapchain->id, 1);
 		write(fake_swapchain->surface->displayx_server_fd, &index, 4);
 		sendFD(fake_swapchain->surface->displayx_server_fd, fence);
+		write(fake_swapchain->surface->displayx_server_fd, &present_id, 8);
 	}
 
 	close(q->fence->sync_fd);
@@ -845,9 +883,44 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 	return VK_SUCCESS;
 }
 
+VK_LAYER_EXPORT VkResult VKAPI_CALL
+DisplayX_WaitForPresentKHR(VkDevice device,
+						   VkSwapchainKHR swapchain,
+						   uint64_t presentId,
+						   uint64_t timeout)
+{
+	VK_UNWRAP_NON_DISPATCHABLE_HANDLE(swapchain, struct fake_swapchain, fake_swapchain)
+	if (fake_swapchain->presentId >= presentId || fake_swapchain->presentId == 0)
+		return VK_SUCCESS;
+
+	std::array<struct epoll_event, 1> events;
+	while (fake_swapchain->presentId < presentId) {
+		int n = epoll_wait(fake_swapchain->surface->epoll_fd, events.data(), 1, timeout);
+		if (n == 0)
+			return VK_TIMEOUT;
+
+		if (events[0].events & (EPOLLERR | EPOLLHUP))
+			return VK_ERROR_SURFACE_LOST_KHR;
+
+		int fd = events[0].data.fd;
+
+		uint64_t present_id;
+		int size = read(fd, &present_id, 8);
+		if (size <= 0)
+			continue;
+
+		if (present_id == 0)
+			return VK_SUCCESS;
+
+		fake_swapchain->presentId = present_id;
+	}
+
+	return VK_SUCCESS;
+}
+
 VK_LAYER_EXPORT void VKAPI_CALL
 DisplayX_DestroyDevice(VkDevice device, 
-					      const VkAllocationCallbacks *pAllocator)
+					   const VkAllocationCallbacks *pAllocator)
 {
 	Logger::log("trace", "Calling vkDestroyDevice");
 
@@ -957,6 +1030,7 @@ DisplayX_GetDeviceProcAddr(VkDevice device,
 	GETPROCADDR(GetDeviceQueue);
 	GETPROCADDR(GetDeviceQueue2);
 	GETPROCADDR(QueuePresentKHR);
+	GETPROCADDR(WaitForPresentKHR);
 
 	{
 		scoped_lock l(global_lock);
