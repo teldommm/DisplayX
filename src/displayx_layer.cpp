@@ -275,6 +275,24 @@ DisplayX_GetDeviceQueue2(VkDevice device,
      }
 }
 
+static void
+x11_set_string_property(xcb_connection_t *conn,
+                        xcb_window_t window,
+                        const char *name,
+                        const char *value)
+{
+	xcb_intern_atom_cookie_t atom_cookie;
+	xcb_intern_atom_reply_t *atom_reply;
+
+	atom_cookie = xcb_intern_atom(conn, 0, strlen(name), name);
+	atom_reply = xcb_intern_atom_reply(conn, atom_cookie, NULL);
+
+	if (atom_reply) {
+    	xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, atom_reply->atom, XCB_ATOM_STRING, 8, strlen(value), value); 	
+    	xcb_flush(conn);
+	}
+}
+
 VK_LAYER_EXPORT VkResult VKAPI_CALL 
 DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
     							const VkXcbSurfaceCreateInfoKHR* pCreateInfo,
@@ -315,6 +333,8 @@ DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
 	*pSurface = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR, fake_surf);
 
 	Logger::log("info", "Created surface %p", pSurface);
+
+	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
 	
 	return VK_SUCCESS;
 }
@@ -356,6 +376,8 @@ DisplayX_CreateXlibSurfaceKHR(VkInstance instance,
 	epoll_ctl(fake_surf->epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
 
 	*pSurface = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR, fake_surf);
+
+	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
 
 	Logger::log("info", "Created surface %p", pSurface);
 	
