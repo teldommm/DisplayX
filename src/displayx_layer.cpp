@@ -1,5 +1,72 @@
 #include "displayx_layer.hpp"
 
+static int readFD(int& socket) {
+    std::vector<char> msg_contents(1);
+    struct iovec iov{};
+    iov.iov_base = msg_contents.data();
+    iov.iov_len = msg_contents.size();
+            
+    std::vector<char> control_buf(CMSG_SPACE(sizeof(int)));
+    struct msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control_buf.data();
+    msg.msg_controllen = control_buf.size();
+            
+    recvmsg(socket, &msg, MSG_WAITALL);
+            
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+    int fd = *reinterpret_cast<int*>(CMSG_DATA(cmsg));
+            
+    return fd;
+}
+
+static void networkThreadLoop() {
+	static constexpr int RECEIVE_PRESENT_ID = 4;
+	
+	int n;
+	std::array<struct epoll_event, 1> events;
+	
+	while ((n = epoll_wait(epoll_fd, events.data(), 1, -1))) {
+    	if (events[0].events & (EPOLLERR | EPOLLHUP)) {
+	    	epoll_ctl(epoll_fd, EPOLL_CTL_DEL, events[0].data.fd, nullptr);
+	    	close(events[0].data.fd);
+	        return;
+	    }
+	     
+	    if (events[0].events & EPOLLIN) {
+	    	int request_code;
+	        int size = read(events[0].data.fd, &request_code, 4);
+	        if (size <= 0)
+	        	continue;
+	                 
+	        switch (request_code) {
+	        	case RECEIVE_PRESENT_ID:
+	            {
+	            	uint8_t id;
+	                uint64_t presentId;
+	                         
+	                read(events[0].data.fd, &id, 1);
+	                read(events[0].data.fd, &presentId, 8);
+
+	                auto swapchain = swapchains[id];
+	                if (!swapchain)
+	                	continue;
+
+	                {
+	                	std::unique_lock<std::mutex> lock(swapchain->presentIdMutex);
+	                 	swapchain->presentId = presentId;
+	                }
+	                swapchain->presentIdCv.notify_all();
+	                break;
+	            }    
+	            default:
+	            	break;            
+	        }
+		}
+	}
+}
+
 VK_LAYER_EXPORT VkResult VKAPI_CALL
 DisplayX_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 						   const VkAllocationCallbacks *pAllocator,
@@ -53,6 +120,7 @@ DisplayX_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
     table.GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)gip(*pInstance, "vkGetInstanceProcAddr");
     table.DestroyInstance = (PFN_vkDestroyInstance)gip(*pInstance, "vkDestroyInstance");
     table.GetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)gip(*pInstance, "vkGetPhysicalDeviceMemoryProperties");
+    table.EnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)gip(*pInstance, "vkEnumerateDeviceExtensionProperties");
 
 	{
 		scoped_lock l(global_lock);
@@ -169,6 +237,7 @@ DisplayX_CreateDevice(VkPhysicalDevice physicalDevice,
     table.ResetFences = (PFN_vkResetFences)gdpa(*pDevice, "vkResetFences");
     table.DestroyFence = (PFN_vkDestroyFence)gdpa(*pDevice, "vkDestroyFence");
     table.GetFenceFdKHR = (PFN_vkGetFenceFdKHR)gdpa(*pDevice, "vkGetFenceFdKHR");
+    table.ImportFenceFdKHR = (PFN_vkImportFenceFdKHR)gdpa(*pDevice, "vkImportFenceFdKHR");
     table.WaitForPresentKHR = (PFN_vkWaitForPresentKHR)gdpa(*pDevice, "vkWaitForPresentKHR");
     table.QueueSubmit = (PFN_vkQueueSubmit)gdpa(*pDevice, "vkQueueSubmit");
     table.GetDeviceQueue = (PFN_vkGetDeviceQueue)gdpa(*pDevice, "vkGetDeviceQueue");
@@ -323,18 +392,19 @@ DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
-	fake_surf->epoll_fd = epoll_create1(0);
+	epoll_fd = epoll_create1(0);
 	struct epoll_event event{};
 	event.data.fd = fake_surf->displayx_server_fd;
 	event.events = EPOLLIN;
 	
-	epoll_ctl(fake_surf->epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
 
 	*pSurface = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR, fake_surf);
 
 	Logger::log("info", "Created surface %p", pSurface);
 
 	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
+	networkListeningThread = std::thread(networkThreadLoop);
 	
 	return VK_SUCCESS;
 }
@@ -368,18 +438,19 @@ DisplayX_CreateXlibSurfaceKHR(VkInstance instance,
 		return VK_ERROR_INITIALIZATION_FAILED;                                                     
 	}
 
-	fake_surf->epoll_fd = epoll_create1(0);
+	epoll_fd = epoll_create1(0);
 	struct epoll_event event{};
 	event.data.fd = fake_surf->displayx_server_fd;
 	event.events = EPOLLIN;
 	            
-	epoll_ctl(fake_surf->epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fake_surf->displayx_server_fd, &event);
 
 	*pSurface = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR, fake_surf);
 
-	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
-
 	Logger::log("info", "Created surface %p", pSurface);
+	
+	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
+	networkListeningThread = std::thread(networkThreadLoop);
 	
 	return VK_SUCCESS;
 }
@@ -469,12 +540,19 @@ DisplayX_GetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physicalDevice,
 		return VK_SUCCESS;
 	}
 
+	const char *surfaceFormat = getenv("DISPLAYX_SURFACE_FORMAT");
+	
 	*pSurfaceFormatCount = 2;
-
+	
 	pSurfaceFormats[0].format = VK_FORMAT_R8G8B8A8_UNORM;
 	pSurfaceFormats[0].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	pSurfaceFormats[1].format = VK_FORMAT_R8G8B8A8_SRGB;
 	pSurfaceFormats[1].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+
+	if (surfaceFormat && !strcmp(surfaceFormat, "bgra8")) {
+		pSurfaceFormats[0].format = VK_FORMAT_B8G8R8A8_UNORM;
+		pSurfaceFormats[1].format = VK_FORMAT_B8G8R8A8_SRGB;
+	}
 	
 	return VK_SUCCESS;
 }
@@ -492,12 +570,19 @@ DisplayX_GetPhysicalDeviceSurfaceFormats2KHR(VkPhysicalDevice physicalDevice,
 		return VK_SUCCESS;
 	}
 
+	const char *surfaceFormat = getenv("DISPLAYX_SURFACE_FORMAT");
+
 	*pSurfaceFormatCount = 2;
 
 	pSurfaceFormats[0].surfaceFormat.format = VK_FORMAT_R8G8B8A8_UNORM;
 	pSurfaceFormats[0].surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	pSurfaceFormats[1].surfaceFormat.format = VK_FORMAT_R8G8B8A8_SRGB;
 	pSurfaceFormats[1].surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+
+	if (surfaceFormat && !strcmp(surfaceFormat, "bgra8")) {
+		pSurfaceFormats[0].surfaceFormat.format = VK_FORMAT_B8G8R8A8_UNORM;
+	    pSurfaceFormats[1].surfaceFormat.format = VK_FORMAT_B8G8R8A8_SRGB;
+	}
 	
 	return VK_SUCCESS;
 }
@@ -516,6 +601,25 @@ DisplayX_GetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice physicalDevice
 	}
 
 	*pSurfacePresentModeCount = 1;
+	pPresentModes[0] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+	
+	return VK_SUCCESS;
+}
+
+VK_LAYER_EXPORT VkResult VKAPI_CALL
+DisplayX_GetPhysicalDeviceSurfacePresentModes2EXT(VkPhysicalDevice physicalDevice,
+												  const VkPhysicalDeviceSurfaceInfo2KHR* pSurfaceInfo,
+												  uint32_t* pPresentModeCount,
+												  VkPresentModeKHR* pPresentModes)
+{
+	Logger::log("trace", "Calling vkGetPhysicalDeviceSurfacePresentModes2EXT");
+	
+	if (pPresentModes == nullptr) {
+		*pPresentModeCount = 1;
+	    return VK_SUCCESS;                                                                                          
+	}
+	
+	*pPresentModeCount = 1;                                                                                  
 	pPresentModes[0] = VK_PRESENT_MODE_IMMEDIATE_KHR;
 	
 	return VK_SUCCESS;
@@ -544,6 +648,9 @@ DisplayX_DestroySurfaceKHR(VkInstance instance,
 
 int to_ahardwarebuffer_format(VkFormat format) {
 	switch (format) {
+		case VK_FORMAT_B8G8R8A8_UNORM:
+		case VK_FORMAT_B8G8R8A8_SRGB:
+			return AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM;
 		case VK_FORMAT_R8G8B8A8_SRGB:
 		case VK_FORMAT_R8G8B8A8_UNORM:
 			return AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
@@ -606,6 +713,30 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 		fake_image->width = swapchain->extent.width;
 		fake_image->height = swapchain->extent.height;
 
+		AHardwareBuffer_Desc desc{};
+		desc.width = swapchain->extent.width;
+		desc.height = swapchain->extent.height;
+		desc.format = to_ahardwarebuffer_format(swapchain->format);
+		desc.layers = 1;
+		desc.usage = AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
+		             AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+		             AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+		             AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
+		             AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+		
+		ret = AHardwareBuffer_allocate(&desc, &fake_image->ahb);
+		if (ret != 0)
+			return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+		VkAndroidHardwareBufferFormatPropertiesANDROID ahbFormatProps{};
+		ahbFormatProps.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID;
+		ahbFormatProps.pNext = nullptr;
+		
+		VkAndroidHardwareBufferPropertiesANDROID ahbProps{};
+		ahbProps.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID;
+		ahbProps.pNext = &ahbFormatProps;
+		table.GetAndroidHardwareBufferPropertiesANDROID(device, fake_image->ahb, &ahbProps);
+
 		VkExternalMemoryImageCreateInfo externalCreateInfo{};
 		externalCreateInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
 		externalCreateInfo.pNext = nullptr;
@@ -639,24 +770,6 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 			Logger::log("error", "Failed to create swapchain image, result %d", result);
 			return result;
 		}
-
-		AHardwareBuffer_Desc desc{};
-		desc.width = swapchain->extent.width;
-		desc.height = swapchain->extent.height;
-		desc.format = to_ahardwarebuffer_format(swapchain->format);
-		desc.layers = 1;
-		desc.usage = AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
-		             AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-		             AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
-
-		ret = AHardwareBuffer_allocate(&desc, &fake_image->ahb);
-		if (ret != 0)
-			return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-		VkAndroidHardwareBufferPropertiesANDROID ahbProps{};
-		ahbProps.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID;
-		ahbProps.pNext = nullptr;
-		table.GetAndroidHardwareBufferPropertiesANDROID(device, fake_image->ahb, &ahbProps);
 
 		VkMemoryDedicatedAllocateInfo dedicatedAlloc{};
 		dedicatedAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
@@ -695,6 +808,11 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 	*pSwapchain = VK_WRAP_NON_DISPATCHABLE_HANDLE(VkSwapchainKHR, swapchain);
 
 	Logger::log("info", "Created swapchain %p", pSwapchain);
+
+	{
+		scoped_lock l(global_lock);
+		swapchains[swapchain->id] = swapchain;
+	}
 	
 	return VK_SUCCESS;
 }
@@ -814,6 +932,8 @@ DisplayX_DestroySwapchainKHR(VkDevice device,
 	write(fake_swapchain->surface->displayx_server_fd, &request_code, 4);
 	write(fake_swapchain->surface->displayx_server_fd, &fake_swapchain->id, 1);
 
+	swapchains.erase(fake_swapchain->id);
+
 	id.destroy(fake_swapchain->id);
 
 	free(fake_swapchain);
@@ -847,7 +967,7 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 						 const VkPresentInfoKHR *pPresentInfo)
 {
 	Logger::log("trace", "Calling vkQueuePresentKHR");
-	const VkPresentIdKHR *presentId = nullptr;
+	const VkPresentIdKHR *presentIdInfo = nullptr;
 
 	auto q = queues[queue];
 
@@ -856,9 +976,9 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 		switch (current->sType) {
 			case VK_STRUCTURE_TYPE_PRESENT_ID_KHR:
 			{
-				presentId = reinterpret_cast<const VkPresentIdKHR *>(current);
+				presentIdInfo = reinterpret_cast<const VkPresentIdKHR *>(current);
 				break;
-			}	
+			}
 			default: 
 			{
 				break;
@@ -879,7 +999,6 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 	submitInfo.pWaitDstStageMask = waitStages.data();
 	submitInfo.waitSemaphoreCount = pPresentInfo->waitSemaphoreCount;
 	submitInfo.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
-
 	q->device->table.QueueSubmit(q->handle, 1, &submitInfo, q->fence->handle);
 	q->device->table.GetFenceFdKHR(q->device->handle, &getFence, &q->fence->sync_fd);
 
@@ -888,9 +1007,10 @@ DisplayX_QueuePresentKHR(VkQueue queue,
 		int request_code = 2;
 		int index = pPresentInfo->pImageIndices[i];
 		int fence = q->fence->sync_fd;
+		
 		uint64_t present_id = -1;
-		if (presentId) {
-			present_id = presentId->pPresentIds[i];
+		if (presentIdInfo) {
+			present_id = presentIdInfo->pPresentIds[i];
 		}
 		
 		write(fake_swapchain->surface->displayx_server_fd, &request_code, 4);
@@ -911,32 +1031,25 @@ DisplayX_WaitForPresentKHR(VkDevice device,
 						   uint64_t presentId,
 						   uint64_t timeout)
 {
+	Logger::log("trace", "Calling vkWaitForPresentKHR");
 	VK_UNWRAP_NON_DISPATCHABLE_HANDLE(swapchain, struct fake_swapchain, fake_swapchain)
+	
+	std::unique_lock<std::mutex> lock(fake_swapchain->presentIdMutex);
+	
 	if (fake_swapchain->presentId >= presentId || fake_swapchain->presentId == 0)
 		return VK_SUCCESS;
 
-	std::array<struct epoll_event, 1> events;
-	while (fake_swapchain->presentId < presentId) {
-		int n = epoll_wait(fake_swapchain->surface->epoll_fd, events.data(), 1, timeout);
-		if (n == 0)
-			return VK_TIMEOUT;
-
-		if (events[0].events & (EPOLLERR | EPOLLHUP))
-			return VK_ERROR_SURFACE_LOST_KHR;
-
-		int fd = events[0].data.fd;
-
-		uint64_t present_id;
-		int size = read(fd, &present_id, 8);
-		if (size <= 0)
-			continue;
-
-		if (present_id == 0)
-			return VK_SUCCESS;
-
-		fake_swapchain->presentId = present_id;
+	if (timeout == UINT64_MAX) {
+		fake_swapchain->presentIdCv.wait(lock, [&] { return fake_swapchain->presentId >= presentId; });
 	}
-
+	else {
+		auto status = fake_swapchain->presentIdCv.wait_for(lock, std::chrono::nanoseconds(timeout), [&] { return fake_swapchain->presentId >= presentId; });
+		if (!status) {
+			Logger::log("error", "vkWaitForPresentKHR has timed out");
+			return VK_TIMEOUT;
+		}
+	}
+	
 	return VK_SUCCESS;
 }
 
@@ -1028,7 +1141,24 @@ DisplayX_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
 			return VK_SUCCESS;
 			
     	scoped_lock l(global_lock);
-        return instanceDispatch[GetKey(physicalDevice)].EnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
+
+    	VkResult result = instanceDispatch[GetKey(physicalDevice)].EnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
+    	if (result != VK_SUCCESS) {
+    		Logger::log("error", "Failed to query device extensions, result %d");
+    		return result;
+    	}
+
+    	if (pProperties) {
+    		for (uint32_t index = 0; index < *pPropertyCount; index++) {
+    			if (!strcmp(pProperties[index].extensionName, "VK_EXT_swapchain_maintenance1")) {
+    				Logger::log("info", "Disabling extension VK_EXT_swapchain_maintenance1");
+    				std::swap(pProperties[index], pProperties[*pPropertyCount - 1]);
+    				(*pPropertyCount)--;
+    				break;
+    			}
+    		}
+    	}
+    	return VK_SUCCESS;
    	}
 
     if (pPropertyCount) *pPropertyCount = 0;
@@ -1070,6 +1200,8 @@ DisplayX_GetInstanceProcAddr(VkInstance instance,
 	GETPROCADDR(DestroyInstance);
 	GETPROCADDR(EnumerateInstanceLayerProperties);
 	GETPROCADDR(EnumerateInstanceExtensionProperties);
+	GETPROCADDR(EnumerateDeviceLayerProperties);
+	GETPROCADDR(EnumerateDeviceExtensionProperties);
 	GETPROCADDR(CreateDevice);
 	GETPROCADDR(CreateXcbSurfaceKHR);
 	GETPROCADDR(CreateXlibSurfaceKHR);
@@ -1077,6 +1209,7 @@ DisplayX_GetInstanceProcAddr(VkInstance instance,
     GETPROCADDR(GetPhysicalDeviceSurfaceFormatsKHR);
     GETPROCADDR(GetPhysicalDeviceSurfaceFormats2KHR);
     GETPROCADDR(GetPhysicalDeviceSurfacePresentModesKHR);
+    GETPROCADDR(GetPhysicalDeviceSurfacePresentModes2EXT);
     GETPROCADDR(GetPhysicalDeviceSurfaceCapabilitiesKHR);
     GETPROCADDR(GetPhysicalDeviceSurfaceCapabilities2KHR);
 	GETPROCADDR(DestroySurfaceKHR);

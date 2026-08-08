@@ -17,6 +17,7 @@
 #include <vulkan/vulkan_xcb.h>
 #include <vulkan/vulkan_xlib.h>
 #include <vector>
+#include <thread>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <memory>
@@ -43,9 +44,13 @@ void* GetKey(T item) {
 std::unordered_map<void *, VkLayerInstanceDispatchTable> instanceDispatch;
 std::unordered_map<void *, VkInstance> instanceMap;
 std::unordered_map<void *, std::shared_ptr<struct device>> deviceDispatch;                             
+std::unordered_map<uint8_t, struct fake_swapchain *> swapchains;
 std::unordered_map<VkQueue, std::shared_ptr<struct queue>> queues;
 ID id;
 std::mutex global_lock;
+
+std::thread networkListeningThread;
+int epoll_fd;
 
 typedef std::lock_guard<std::mutex> scoped_lock;
 
@@ -74,7 +79,6 @@ struct device {
 struct fake_surface {
 	VkInstance instance;
 	int displayx_server_fd;
-	int epoll_fd;
 	xcb_connection_t *conn;
 	xcb_window_t window;
 };
@@ -98,4 +102,6 @@ struct fake_swapchain {
 	uint32_t currentImage;
 	uint8_t id;
 	uint64_t presentId;
+	std::mutex presentIdMutex;
+	std::condition_variable presentIdCv;
 };
