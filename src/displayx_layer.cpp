@@ -1,5 +1,8 @@
 #include "displayx_layer.hpp"
 
+static bool init_network_thread_once = false;
+static std::atomic_bool stopped = false;
+
 static int readFD(int& socket) {
     std::vector<char> msg_contents(1);
     struct iovec iov{};
@@ -27,7 +30,7 @@ static void networkThreadLoop() {
 	int n;
 	std::array<struct epoll_event, 1> events;
 	
-	while ((n = epoll_wait(epoll_fd, events.data(), 1, -1))) {
+	while (!stopped && (n = epoll_wait(epoll_fd, events.data(), 1, -1))) {
     	if (events[0].events & (EPOLLERR | EPOLLHUP)) {
 	    	epoll_ctl(epoll_fd, EPOLL_CTL_DEL, events[0].data.fd, nullptr);
 	    	close(events[0].data.fd);
@@ -65,6 +68,19 @@ static void networkThreadLoop() {
 	        }
 		}
 	}
+}
+
+__attribute__((constructor))
+static void init() {
+	if (!init_network_thread_once) {
+	  	networkListeningThread = std::thread(networkThreadLoop);
+        init_network_thread_once = true;
+    }
+}
+
+__attribute__((destructor))
+static void finish() {
+	stopped = true;
 }
 
 VK_LAYER_EXPORT VkResult VKAPI_CALL
@@ -372,7 +388,7 @@ DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
 
 	int res;
 	  
-	struct fake_surface *fake_surf = (struct fake_surface *)malloc(sizeof(struct fake_surface));
+	struct fake_surface *fake_surf = new struct fake_surface;
 	fake_surf->conn = pCreateInfo->connection;
 	fake_surf->window = pCreateInfo->window;
 	fake_surf->displayx_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);                  
@@ -404,7 +420,6 @@ DisplayX_CreateXcbSurfaceKHR(VkInstance instance,
 	Logger::log("info", "Created surface %p", pSurface);
 
 	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
-	networkListeningThread = std::thread(networkThreadLoop);
 	
 	return VK_SUCCESS;
 }
@@ -419,7 +434,7 @@ DisplayX_CreateXlibSurfaceKHR(VkInstance instance,
 
 	int res;
 	
-	struct fake_surface *fake_surf = (struct fake_surface *)malloc(sizeof(struct fake_surface));
+	struct fake_surface *fake_surf = new struct fake_surface;
 	fake_surf->conn = XGetXCBConnection(pCreateInfo->dpy);
 	fake_surf->window = pCreateInfo->window;
 	fake_surf->displayx_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -450,7 +465,6 @@ DisplayX_CreateXlibSurfaceKHR(VkInstance instance,
 	Logger::log("info", "Created surface %p", pSurface);
 	
 	x11_set_string_property(fake_surf->conn, fake_surf->window, "_MESA_DRV", "0");
-	networkListeningThread = std::thread(networkThreadLoop);
 	
 	return VK_SUCCESS;
 }
@@ -643,7 +657,7 @@ DisplayX_DestroySurfaceKHR(VkInstance instance,
 
 	close(fake_surface->displayx_server_fd);
 	
-	free(fake_surface);
+	delete fake_surface;
 }
 
 int to_ahardwarebuffer_format(VkFormat format) {
@@ -684,7 +698,7 @@ DisplayX_CreateSwapchainKHR(VkDevice device,
 	auto dev = deviceDispatch[GetKey(device)];                              
 	VkLayerDispatchTable table = dev->table;
 	
-	struct fake_swapchain *swapchain = (struct fake_swapchain *)malloc(sizeof(struct fake_swapchain));
+	struct fake_swapchain *swapchain = new struct fake_swapchain;
 	swapchain->imageCount = pCreateInfo->minImageCount;
 	swapchain->format = pCreateInfo->imageFormat;
 	swapchain->extent = pCreateInfo->imageExtent;
@@ -936,7 +950,7 @@ DisplayX_DestroySwapchainKHR(VkDevice device,
 
 	id.destroy(fake_swapchain->id);
 
-	free(fake_swapchain);
+	delete fake_swapchain;
 }
 
 void sendFD(int& socket, int fd) {
