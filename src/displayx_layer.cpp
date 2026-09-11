@@ -840,15 +840,26 @@ DisplayX_GetSwapchainImagesKHR(VkDevice device,
 	Logger::log("trace", "Calling vkGetSwapchainImagesKHR");
 	
 	VK_UNWRAP_NON_DISPATCHABLE_HANDLE(swapchain, struct fake_swapchain, fake_swapchain)
+
+	if (!fake_swapchain || !pSwapchainImageCount)
+		return VK_ERROR_INITIALIZATION_FAILED;
 	
 	if (pSwapchainImages == nullptr) {
 		*pSwapchainImageCount = fake_swapchain->images.size();
 		return VK_SUCCESS;
 	}
-	
-	for (uint32_t i = 0; i < *pSwapchainImageCount; i++) {
+
+	auto requested = *pSwapchainImageCount;
+	auto count = (requested <= fake_swapchain->imageCount) ? requested : fake_swapchain->imageCount;
+		
+	for (uint32_t i = 0; i < count; i++) {
 		pSwapchainImages[i] = fake_swapchain->images[i]->handle;
 	}
+
+	*pSwapchainImageCount = count;
+	
+	if (requested < fake_swapchain->imageCount)
+		return VK_INCOMPLETE;
 
 	return VK_SUCCESS;
 }
